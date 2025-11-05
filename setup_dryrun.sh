@@ -1,37 +1,57 @@
 #!/usr/bin/env bash
-# -------------------------------------------------------------------
-# setup_dryrun.sh — Simulate QSOL-IMC / Podcaster + Dev Environment
-# Author: Trent Slade / QSOLKCB
-# -------------------------------------------------------------------
+# QSOL Arch Bootstrap
+# Small is Beautiful, Fast is Holy
 
-LOG_DIR="$HOME/system_specs"
-mkdir -p "$LOG_DIR"
+set -Eeuo pipefail
+LOG="$HOME/setup.log"
+trap 'echo "❌ Error on line $LINENO" | tee -a "$LOG"' ERR
 
-echo "==> Collecting system specs..."
-lscpu > "$LOG_DIR/cpu.txt"
-lspci -nnk > "$LOG_DIR/pci_devices.txt"
-lsusb > "$LOG_DIR/usb.txt"
-lspci | grep -i audio > "$LOG_DIR/audio.txt"
-lsmod | grep snd > "$LOG_DIR/audio_modules.txt"
-free -h > "$LOG_DIR/memory.txt"
-lsblk -o NAME,SIZE,TYPE,MOUNTPOINT > "$LOG_DIR/storage.txt"
-pacman -Qqe > "$LOG_DIR/pre_setup_pkglist.txt"
+log()  { echo -e "\033[1;34m==> $1\033[0m" | tee -a "$LOG"; }
+ok()   { echo -e "\033[1;32m✅ $1\033[0m" | tee -a "$LOG"; }
 
-echo "==> Checking current audio stack..."
-systemctl --user status pipewire pipewire-pulse wireplumber > "$LOG_DIR/audio_services.txt" 2>&1
-pactl info | grep "Server Name" >> "$LOG_DIR/audio_services.txt" 2>&1
-echo "✅ System logs saved to $LOG_DIR"
+# --- SYSTEM INFO ---
+log "Collecting system specs..."
+mkdir -p "$HOME/system_specs"
+fastfetch --load-config none > "$HOME/system_specs/fastfetch.txt" 2>&1 || true
+lspci > "$HOME/system_specs/lspci.txt" 2>/dev/null || true
+lsusb > "$HOME/system_specs/lsusb.txt" 2>/dev/null || true
+ok "System specs collected."
 
-echo "==> Simulating package installation..."
-sudo pacman -S --print \
-  base base-devel git curl wget \
-  clang cmake make ninja gdb llvm \
-  python python-pip python-virtualenv \
-  go rust npm nodejs \
-  pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
-  alsa-utils alsa-plugins pavucontrol helvum easyeffects \
-  obs-studio vokoscreen-ng kdenlive shotcut \
-  ffmpeg sox speexdsp vlc mpv quodlibet spek gnuplot \
-  sof-firmware alsa-firmware alsa-ucm-conf \
-  jupyterlab
-echo "==> Dry-run complete — no packages installed."
+# --- DEPENDENCIES ---
+log "Installing base utilities..."
+sudo pacman -S --needed --noconfirm usbutils fastfetch wget git curl base-devel || true
+ok "Base utilities ensured."
+
+# --- AUDIO STACK ---
+log "Checking audio stack..."
+if ! systemctl --user is-active --quiet pipewire; then
+  log "PipeWire not active — enabling."
+  systemctl --user enable --now pipewire pipewire-pulse wireplumber || true
+else
+  ok "PipeWire active."
+fi
+
+# --- MULTIMEDIA (AUR SUPPORT) ---
+log "Ensuring AUR helper..."
+if command -v paru &>/dev/null; then AUR=paru
+elif command -v yay &>/dev/null; then AUR=yay
+else
+  log "Installing paru..."
+  git clone https://aur.archlinux.org/paru.git /tmp/paru && cd /tmp/paru && makepkg -si --noconfirm
+  AUR=paru
+fi
+ok "AUR helper ready: $AUR"
+
+log "Installing multimedia tools (vokoscreen-ng, spek)..."
+$AUR -S --needed --noconfirm vokoscreen-ng spek-git || log "Skipped missing AUR targets."
+ok "Multimedia stage complete."
+
+# --- DEVELOPMENT TOOLS ---
+log "Installing dev tools..."
+sudo pacman -S --needed --noconfirm python python-pip rust go docker jq neovim || true
+ok "Dev tools installed."
+
+# --- CLEANUP ---
+log "Cleaning package cache..."
+sudo pacman -Sc --noconfirm || true
+ok "Setup complete. Log stored at $LOG"
